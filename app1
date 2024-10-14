@@ -1,0 +1,392 @@
+import tkinter as tk
+from tkinter import messagebox, filedialog
+import json
+from datetime import datetime
+import os
+import locale
+import shutil
+import matplotlib.pyplot as plt
+import pyautogui  # Importar o módulo para capturar a tela
+import pyperclip  # Importar o módulo para copiar texto para a área de transferência
+
+# Configura a localidade para a moeda corrente local
+locale.setlocale(locale.LC_ALL, '')
+
+
+class ImpressaoApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Serviços de Impressão")
+
+        # Intercepta o evento de fechamento da janela
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Frame principal com Canvas e Scrollbar
+        container = tk.Frame(self.root)
+        container.pack(fill="both", expand=True)
+
+        # Canvas para adicionar o conteúdo com rolagem
+        self.canvas = tk.Canvas(container)
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Scrollbar para o canvas
+        self.scrollbar = tk.Scrollbar(
+            container, orient="vertical", command=self.canvas.yview)
+        self.scrollbar.pack(side="right", fill="y")
+
+        # Configurando o canvas para funcionar com a scrollbar
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind('<Configure>', self.on_canvas_configure)
+
+        # Frame dentro do canvas para conter os widgets
+        self.frame = tk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.frame, anchor="nw")
+
+        # Rolar com o mouse
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Dicionário para armazenar os serviços, quantidades e valores
+        self.servicos = {
+            "Impressão Colorida": {"quantidade": 0, "valor": 0.0},
+            "Cópia Colorida": {"quantidade": 0, "valor": 0.0},
+            "Impressão Preto e Branco": {"quantidade": 0, "valor": 0.0},
+            "Cópia Preto e Branco": {"quantidade": 0, "valor": 0.0},
+            "Impressão Foto 10x15": {"quantidade": 0, "valor": 0.0},
+            "Impressão A3 Preto": {"quantidade": 0, "valor": 0.0},
+            "Impressão A3 Colorido": {"quantidade": 0, "valor": 0.0},
+            "Impressão Foto A4": {"quantidade": 0, "valor": 0.0},
+            "Foto 3x4 (4 fotos)": {"quantidade": 0, "valor": 0.0},
+            "Foto 3x4 (8 fotos)": {"quantidade": 0, "valor": 0.0},
+            # Apenas quantidade
+            "Total de Impressão Contadores": {"quantidade": 0}
+        }
+
+        self.data_hoje = datetime.now().strftime("%Y-%m-%d")
+        self.database_file = f"servicos_{self.data_hoje}.json"
+
+        # Carrega os dados existentes do arquivo JSON, se existir
+        if os.path.exists(self.database_file):
+            with open(self.database_file, "r") as file:
+                self.database = json.load(file)
+        else:
+            self.database = {servico: {"quantidade": 0, "valor": 0.0 if "valor" in dados else None}
+                             for servico, dados in self.servicos.items()}
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        row = 0
+        self.quantidade_entries = {}
+        for servico in self.servicos:
+            label = tk.Label(self.frame, text=servico,
+                             font=('Arial', 10, 'bold'))
+            label.grid(row=row, column=0, padx=5, pady=5, sticky="w")
+
+            quantidade_label = tk.Label(self.frame, text="Quantidade:")
+            quantidade_label.grid(
+                row=row, column=1, padx=5, pady=5, sticky="e")
+
+            quantidade_entry = tk.Entry(self.frame, width=10)
+            quantidade_entry.grid(
+                row=row, column=2, padx=5, pady=5, sticky="ew")
+
+            if servico != "Total de Impressão Contadores":
+                valor_label = tk.Label(self.frame, text="Valor (R$):")
+                valor_label.grid(row=row, column=3, padx=5, pady=5, sticky="e")
+
+                valor_entry = tk.Entry(self.frame, width=10)
+                valor_entry.grid(row=row, column=4, padx=5,
+                                 pady=5, sticky="ew")
+
+                add_button = tk.Button(self.frame, text="Adicionar", command=lambda s=servico,
+                                       q=quantidade_entry, v=valor_entry: self.add_servico(s, q, v))
+                add_button.grid(row=row, column=5, padx=5, pady=5, sticky="ew")
+            else:
+                valor_entry = None
+                self.total_impressao_entry = quantidade_entry  # Não precisa de botão adicionar
+
+            self.quantidade_entries[servico] = quantidade_entry
+            row += 1
+
+        # Adicionando campos para Impressoras 1 a 5
+        self.create_contador_row(
+            row, "Impressora 1", self.calcular_diferenca_impressora_1)
+        row += 3
+        self.create_contador_row(
+            row, "Impressora 2", self.calcular_diferenca_impressora_2)
+        row += 3
+        self.create_contador_row(
+            row, "Impressora 3", self.calcular_diferenca_impressora_3)
+        row += 3
+        self.create_contador_row(
+            row, "Impressora 4", self.calcular_diferenca_impressora_4)
+        row += 3
+        self.create_contador_row(
+            row, "Impressora 5", self.calcular_diferenca_impressora_5)
+        row += 3
+
+        # Usando pack() para garantir que os botões fiquem na parte inferior
+        button_frame = tk.Frame(self.frame)
+        button_frame.grid(row=row, columnspan=6, pady=20, sticky="ew")
+
+        finalizar_button = tk.Button(
+            button_frame, text="Finalização Diária", command=self.finalizar_pedido)
+        finalizar_button.pack(side=tk.LEFT, padx=5)
+
+        grafico_button = tk.Button(
+            button_frame, text="Gerar Gráfico Comparativo", command=self.gerar_grafico_comparativo)
+        grafico_button.pack(side=tk.LEFT, padx=5)
+
+        backup_button = tk.Button(
+            button_frame, text="Criar Backup", command=self.criar_backup)
+        backup_button.pack(side=tk.LEFT, padx=5)
+
+        restaurar_button = tk.Button(
+            button_frame, text="Restaurar Backup", command=self.restaurar_backup)
+        restaurar_button.pack(side=tk.LEFT, padx=5)
+
+    def create_contador_row(self, row, impressora_name, callback):
+        """Cria uma linha de contadores para uma impressora."""
+        label_inicial = tk.Label(
+            self.frame, text=f"Contador Inicial {impressora_name}:")
+        label_inicial.grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        contador_inicial = tk.Entry(self.frame, width=10)
+        contador_inicial.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
+        contador_inicial.bind("<KeyRelease>", callback)
+
+        label_final = tk.Label(
+            self.frame, text=f"Contador Final {impressora_name}:")
+        label_final.grid(row=row + 1, column=0, padx=5, pady=5, sticky="w")
+        contador_final = tk.Entry(self.frame, width=10)
+        contador_final.grid(row=row + 1, column=1, padx=5, pady=5, sticky="ew")
+        contador_final.bind("<KeyRelease>", callback)
+
+        resultado_label = tk.Label(self.frame, text="")
+        resultado_label.grid(row=row + 2, column=1, padx=5, pady=5)
+
+        setattr(self, f"contador_inicial_{
+                impressora_name.lower().replace(' ', '_')}", contador_inicial)
+        setattr(self, f"contador_final_{
+                impressora_name.lower().replace(' ', '_')}", contador_final)
+        setattr(self, f"resultado_label_{
+                impressora_name.lower().replace(' ', '_')}", resultado_label)
+
+    # Função para rolar com a roda do mouse
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    # Configura o tamanho do canvas ao mudar o tamanho da janela
+    def on_canvas_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def add_servico(self, servico, quantidade_entry, valor_entry):
+        try:
+            quantidade = int(quantidade_entry.get())
+
+            if quantidade > 0:
+                if valor_entry:
+                    valor = float(valor_entry.get().replace(',', '.'))
+                    self.servicos[servico]["quantidade"] += quantidade
+                    self.servicos[servico]["valor"] += quantidade * valor
+
+                    if servico not in self.database:
+                        self.database[servico] = {
+                            "quantidade": 0, "valor": 0.0}
+
+                    self.database[servico]["quantidade"] += quantidade
+                    self.database[servico]["valor"] += quantidade * valor
+
+                else:
+                    self.servicos[servico]["quantidade"] += quantidade
+
+                    if servico not in self.database:
+                        self.database[servico] = {"quantidade": 0}
+
+                    self.database[servico]["quantidade"] += quantidade
+
+                self.atualizar_database()
+                quantidade_entry.delete(0, tk.END)
+                if valor_entry:
+                    valor_entry.delete(0, tk.END)
+            else:
+                messagebox.showwarning(
+                    "Entrada inválida", "Por favor, insira valores válidos para quantidade.")
+        except ValueError:
+            messagebox.showwarning(
+                "Entrada inválida", "Quantidade deve ser um número inteiro e valor deve ser um número decimal.")
+
+        # Atualiza o valor de Total de Impressão Contadores automaticamente
+        self.atualizar_total_impressao()
+
+    def atualizar_database(self):
+        with open(self.database_file, "w") as file:
+            json.dump(self.database, file, indent=4)
+
+    def atualizar_total_impressao(self):
+        total_contadores = 0
+        for i in range(1, 6):
+            inicial = getattr(self, f"contador_inicial_impressora_{i}").get()
+            final = getattr(self, f"contador_final_impressora_{i}").get()
+            if inicial.isdigit() and final.isdigit():
+                total_contadores += int(final) - int(inicial)
+
+        total_formularios = sum(
+            int(self.quantidade_entries[servico].get() or 0)
+            for servico in self.servicos if servico != "Total de Impressão Contadores"
+        )
+
+        total_impressao = total_contadores - total_formularios
+        self.total_impressao_entry.delete(0, tk.END)
+        self.total_impressao_entry.insert(0, str(total_impressao))
+
+    # Funções para calcular as diferenças de cada impressora
+    def calcular_diferenca(self, inicial, final, resultado_label):
+        try:
+            inicial_valor = int(inicial.get())
+            final_valor = int(final.get())
+            if final_valor >= inicial_valor:
+                diferenca = final_valor - inicial_valor
+                resultado_label.config(text=f"Total: {diferenca}")
+            else:
+                resultado_label.config(text="Erro: Final < Inicial")
+        except ValueError:
+            resultado_label.config(text="Erro nos valores")
+
+        # Atualiza o valor de Total de Impressão Contadores automaticamente
+        self.atualizar_total_impressao()
+
+    def calcular_diferenca_impressora_1(self, event=None):
+        self.calcular_diferenca(self.contador_inicial_impressora_1,
+                                self.contador_final_impressora_1, self.resultado_label_impressora_1)
+
+    def calcular_diferenca_impressora_2(self, event=None):
+        self.calcular_diferenca(self.contador_inicial_impressora_2,
+                                self.contador_final_impressora_2, self.resultado_label_impressora_2)
+
+    def calcular_diferenca_impressora_3(self, event=None):
+        self.calcular_diferenca(self.contador_inicial_impressora_3,
+                                self.contador_final_impressora_3, self.resultado_label_impressora_3)
+
+    def calcular_diferenca_impressora_4(self, event=None):
+        self.calcular_diferenca(self.contador_inicial_impressora_4,
+                                self.contador_final_impressora_4, self.resultado_label_impressora_4)
+
+    def calcular_diferenca_impressora_5(self, event=None):
+        self.calcular_diferenca(self.contador_inicial_impressora_5,
+                                self.contador_final_impressora_5, self.resultado_label_impressora_5)
+
+    def finalizar_pedido(self):
+        # Calcular o total de quantidade e valores, excluindo "Total de Impressão Contadores"
+        total_quantidade = sum(servico["quantidade"]
+                               for servico in self.servicos.values() if servico != self.servicos["Total de Impressão Contadores"])
+        total_valor = sum(
+            servico["valor"] for servico in self.servicos.values() if "valor" in servico)
+
+        resumo = "Resumo da Finalização Diária:\n"
+        for servico, dados in self.servicos.items():
+            if servico != "Total de Impressão Contadores":  # Exclui do loop
+                if "valor" in dados:
+                    valor_formatado = locale.currency(
+                        dados['valor'], grouping=True)
+                    resumo += f"{servico}: {dados['quantidade']
+                                            } unidades - {valor_formatado}\n"
+                else:
+                    resumo += f"{servico}: {dados['quantidade']} unidades\n"
+
+        resumo += f"\nTotal de Serviços: {total_quantidade} unidades"
+        valor_formatado = locale.currency(total_valor, grouping=True)
+        resumo += f"\nValor Total: {valor_formatado}"
+
+        # Calcula e adiciona o Total de Impressão Contadores ao resumo
+        total_impressao = int(self.total_impressao_entry.get() or 0)
+        resumo += f"\nTotal de Impressão Contadores: {
+            total_impressao} unidades"
+
+        # Calcula e exibe o Desperdício (Total de Impressão Contadores - Total de Serviços)
+        desperdicio = total_impressao - total_quantidade
+        resumo += f"\nDesperdício: {desperdicio} unidades"
+
+        # Exibe o resumo em uma caixa de mensagem
+        messagebox.showinfo("Finalização Diária", resumo)
+
+        # Copia o resumo para a área de transferência
+        pyperclip.copy(resumo)
+
+        # Captura a tela
+        pyautogui.screenshot("finalizacao_diaria.png")
+
+        # Inicializa um novo arquivo JSON para o próximo dia
+        self.iniciar_nova_sessao()
+
+    def iniciar_nova_sessao(self):
+        # Verifica se a data atual é diferente da data de hoje
+        data_atual = datetime.now().strftime("%Y-%m-%d")
+        if data_atual != self.data_hoje:
+            # Atualiza a data do arquivo e cria um novo arquivo JSON
+            self.data_hoje = data_atual
+            self.database_file = f"servicos_{self.data_hoje}.json"
+            self.servicos = {servico: {"quantidade": 0, "valor": 0.0 if "valor" in dados else None}
+                             for servico, dados in self.servicos.items()}
+            self.database = self.servicos
+            self.atualizar_database()
+
+    def gerar_grafico_comparativo(self):
+        arquivos_json = [arquivo for arquivo in os.listdir() if arquivo.startswith(
+            "servicos_") and arquivo.endswith(".json")]
+
+        dados_dias = {}
+        for arquivo in arquivos_json:
+            data = arquivo.replace("servicos_", "").replace(".json", "")
+            with open(arquivo, "r") as file:
+                dados = json.load(file)
+                total_quantidade = sum(servico["quantidade"]
+                                       for servico in dados.values())
+                dados_dias[data] = total_quantidade
+
+        dias = sorted(dados_dias.keys())
+        quantidades = [dados_dias[dia] for dia in dias]
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(dias, quantidades, color='skyblue')
+        plt.xlabel('Data')
+        plt.ylabel('Total de Quantidades')
+        plt.title('Comparativo de Quantidades de Serviços por Dia')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+
+    def criar_backup(self):
+        backup_file = f"backup_{self.data_hoje}.json"
+        if os.path.exists(self.database_file):
+            shutil.copy(self.database_file, backup_file)
+            backup_dir = os.path.abspath(backup_file)
+            messagebox.showinfo(
+                "Backup", f"Backup criado com sucesso: {backup_dir}")
+        else:
+            messagebox.showwarning(
+                "Backup", "Arquivo de dados não encontrado para backup.")
+
+    def restaurar_backup(self):
+        file_path = filedialog.askopenfilename(
+            title="Selecionar Arquivo de Backup",
+            filetypes=[("Arquivos JSON", "*.json")]
+        )
+        if file_path:
+            with open(file_path, "r") as file:
+                self.database = json.load(file)
+                self.database_file = f"servicos_{self.data_hoje}.json"
+                self.atualizar_database()
+                messagebox.showinfo("Restaurar Backup",
+                                    "Backup restaurado com sucesso.")
+
+    # Função para tratar o evento de fechamento da janela
+    def on_closing(self):
+        if messagebox.askokcancel("Sair", "Tem certeza que deseja sair?"):
+            # Se o usuário confirmar, fechar o programa e salvar o banco de dados
+            self.atualizar_database()
+            self.root.destroy()
+
+
+root = tk.Tk()
+app = ImpressaoApp(root)
+root.mainloop()
